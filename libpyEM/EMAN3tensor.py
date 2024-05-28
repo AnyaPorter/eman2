@@ -70,9 +70,10 @@ class StackCache():
 		self.filename=filename
 
 		self.fp=open(filename,"wb+")		# erase file!
-		self.locs=np.zeros(n+1,dtype=np.int64)
-		self.orts=np.zeros((n,3),dtype=np.float32)
-		self.tytx=np.zeros((n,2),dtype=np.float32)
+		self.locs=np.zeros(n+1,dtype=np.int64)			# list of seek locations in the binary file for each image
+		self.orts=np.zeros((n,3),dtype=np.float32)		# orientations in spinvec format
+		self.tytx=np.zeros((n,2),dtype=np.float32)		# image shifts in absolute [-0.5,0.5] format
+		self.frcs=np.zeros((n),dtype=np.float32)+2.0	# FRCs from previous round, initialize to 2.0 (> 1.0 normal max)
 		self.cloc=0
 		self.locked=False
 
@@ -87,8 +88,12 @@ class StackCache():
 		while self.locked: time.sleep(0.1)
 		self.locked=True
 		stack.coerce_tensor()
-		if ortss is not None: self.orts[n0:n0+len(stack)]=ortss.numpy
-		if tytxs is not None: self.tytx[n0:n0+len(stack)]=tytxs
+		if ortss is not None:
+			try: self.orts[n0:n0+len(stack)]=ortss
+			except: self.orts[n0:n0+len(stack)]=ortss.numpy()
+		if tytxs is not None:
+			try: self.tytx[n0:n0+len(stack)]=tytxs
+			except: self.tytx[n0:n0+len(stack)]=tytxs.numpy()
 
 		# we go through the images one at a time, serialze, and write to a file with a directory
 		self.fp.seek(self.cloc)
@@ -100,6 +105,16 @@ class StackCache():
 			self.locs[n0+i+1]=self.cloc
 
 		self.locked=False
+
+	def add_orts(self,nlist,dorts,dtytxs):
+		"""adds dorts and dtytxs to existing arrays at locations described by nlist, used to take a gradient step
+		on a subset of the data."""
+		self.orts[nlist]+=dorts
+		self.tytx[nlist]+=dtytxs
+
+	def set_frcs(self,nlist,frcs):
+		self.frcs[nlist]=frcs
+
 
 	def read(self,nlist):
 		while self.locked: time.sleep(0.1)
@@ -114,7 +129,7 @@ class StackCache():
 		self.locked=False
 		ret=EMStack2D(tf.stack(stack))
 		orts=Orientations(self.orts[nlist])
-		tytx=self.tytx[nlist]
+		tytx=tf.constant(self.tytx[nlist])
 		return ret,orts,tytx
 
 class EMStack():
@@ -380,7 +395,7 @@ class EMStack2D(EMStack):
 	@property
 	def orientations(self):
 		"""returns an Orientations object and tytx array for the current images if available or None if not"""
-		if self._xforms is None: return None
+		if self._xforms is None: return None,None
 		orts=Orientations()
 		tytx=orts.init_from_transforms(self._xforms)
 		return orts,tytx
